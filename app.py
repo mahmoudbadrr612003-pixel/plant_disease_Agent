@@ -61,9 +61,8 @@ RESNET_MODEL_ID = os.environ.get(
 )
 
 print("⏳ Loading ResNet50 Feature Extractor...")
-feature_extractor = AutoFeatureExtractor.from_pretrained(RESNET_MODEL_ID)
+feature_extractor = AutoFeatureExtractor.from_pretrained("microsoft/resnet-50")
 print("✅ Feature Extractor loaded")
-
 print("⏳ Loading ResNet50 Model...")
 resnet_model = AutoModelForImageClassification.from_pretrained(RESNET_MODEL_ID)
 resnet_model = resnet_model.to(DEVICE)
