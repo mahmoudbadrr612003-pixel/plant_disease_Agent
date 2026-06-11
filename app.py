@@ -1,6 +1,6 @@
 """
 🌿 PlantDoc AI — Hugging Face Spaces
-LangChain + LangGraph + BLIP-2 + Groq + Tavily
+LangChain + LangGraph + ResNet50 (DenseNet) + Groq + Tavily
 ✅ Optimized: GPU support, diagnosis cache, parallel search, faster inference
 """
 
@@ -27,12 +27,8 @@ from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 from tavily import TavilyClient
 
-# ── Transformers / PEFT ───────────────────────────────────────
-from transformers import (
-    Blip2Processor,
-    Blip2ForConditionalGeneration,
-    BitsAndBytesConfig,
-)
+# ── Transformers ──────────────────────────────────────────────
+from transformers import AutoFeatureExtractor, AutoModelForImageClassification
 
 # ── Performance ───────────────────────────────────────────────
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -57,38 +53,25 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"🖥️  Device: {DEVICE}")
 
 # ══════════════════════════════════════════════════════════════
-# BLIP-2
+# ResNet50 / DenseNet MODEL
 # ══════════════════════════════════════════════════════════════
-BLIP2_MODEL_ID = os.environ.get(
-    "BLIP2_MODEL_ID",
-    "Mahmoud-Badr-Zidan/blip2-plant-disease"
+RESNET_MODEL_ID = os.environ.get(
+    "RESNET_MODEL_ID",
+    "mohamedabdalmgyd/resnet50-plant-disease-densenet"
 )
 
-print("⏳ Loading BLIP-2 Processor...")
-infer_processor = Blip2Processor.from_pretrained(BLIP2_MODEL_ID)
-print("✅ Processor loaded")
+print("⏳ Loading ResNet50 Feature Extractor...")
+feature_extractor = AutoFeatureExtractor.from_pretrained(RESNET_MODEL_ID)
+print("✅ Feature Extractor loaded")
 
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_compute_dtype=torch.float16,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_use_double_quant=True,
-) if DEVICE == "cuda" else None
-
-print("⏳ Loading BLIP-2 Model...")
-blip_model = Blip2ForConditionalGeneration.from_pretrained(
-    BLIP2_MODEL_ID,
-    quantization_config=bnb_config,
-    device_map="auto" if DEVICE == "cuda" else None,
-    torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
-)
-if DEVICE == "cpu":
-    blip_model = blip_model.to("cpu")
-blip_model.eval()
-print("✅ BLIP-2 Model loaded")
+print("⏳ Loading ResNet50 Model...")
+resnet_model = AutoModelForImageClassification.from_pretrained(RESNET_MODEL_ID)
+resnet_model = resnet_model.to(DEVICE)
+resnet_model.eval()
+print("✅ ResNet50 Model loaded")
 
 # ══════════════════════════════════════════════════════════════
-# DIAGNOSIS CACHE — avoids re-running BLIP-2 for same image
+# DIAGNOSIS CACHE — avoids re-running model for same image
 # ══════════════════════════════════════════════════════════════
 _diagnosis_cache: dict = {}
 
@@ -99,6 +82,53 @@ def _image_hash(image_path: str) -> str:
         return hashlib.md5(f"{image_path}:{mtime}".encode()).hexdigest()
     except Exception:
         return image_path
+
+# ══════════════════════════════════════════════════════════════
+# LABEL PARSING — extract plant & disease from model label
+# ══════════════════════════════════════════════════════════════
+HEALTHY_KEYWORDS = {"healthy", "health", "normal", "no disease"}
+
+def _parse_label(label: str) -> dict:
+    """
+    Model labels are typically in the format:
+    'Tomato___Early_blight'  or  'Apple___healthy'
+    Returns {'plant': 'Tomato', 'disease': 'Early blight'}
+    """
+    label = label.replace("___", "|").replace("__", "|").replace("_", " ")
+    parts = label.split("|")
+    plant   = parts[0].strip().title() if len(parts) > 0 else "Unknown"
+    disease = parts[1].strip().title() if len(parts) > 1 else "Unknown"
+
+    # Normalize healthy labels
+    if any(kw in disease.lower() for kw in HEALTHY_KEYWORDS):
+        disease = "healthy"
+
+    return {"plant": plant, "disease": disease}
+
+
+def predict_plant_and_disease(image: Image.Image, cache_key: str = "") -> dict:
+    """Run ResNet50 inference. Returns cached result if same image."""
+    if cache_key and cache_key in _diagnosis_cache:
+        print(f"📦 Cache hit for {cache_key[:8]}")
+        return _diagnosis_cache[cache_key]
+
+    inputs = feature_extractor(images=image, return_tensors="pt")
+    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        outputs = resnet_model(**inputs)
+        logits  = outputs.logits
+
+    predicted_class_idx = logits.argmax(-1).item()
+    label = resnet_model.config.id2label.get(predicted_class_idx, "Unknown___Unknown")
+
+    result = _parse_label(label)
+
+    if cache_key:
+        _diagnosis_cache[cache_key] = result
+
+    return result
+
 
 # ══════════════════════════════════════════════════════════════
 # IRRIGATION MODEL
@@ -140,76 +170,6 @@ else:
 
 # Pre-split PDF pages once for faster searching
 PDF_PAGES = PDF_TEXT.split("--- Page ") if PDF_TEXT else []
-
-# ══════════════════════════════════════════════════════════════
-# KNOWN PLANTS / DISEASES
-# ══════════════════════════════════════════════════════════════
-KNOWN_PLANTS = [
-    "apple","grape","corn","tomato","potato","strawberry","peach",
-    "cherry","pepper","squash","raspberry","soybean","wheat",
-    "rice","cucumber","maize","blueberry","orange",
-]
-
-KNOWN_DISEASES = [
-    "black rot","early blight","late blight","leaf scorch","rust",
-    "common rust","northern leaf blight","gray leaf spot","scab",
-    "powdery mildew","downy mildew","anthracnose","mosaic",
-    "bacterial spot","septoria","target spot","leaf mold",
-    "fire blight","crown gall","cercospora","alternaria",
-    "botrytis","fusarium","verticillium","phytophthora",
-]
-
-
-def predict_plant_and_disease(image: Image.Image, cache_key: str = "") -> dict:
-    """Run BLIP-2 inference. Returns cached result if same image."""
-    if cache_key and cache_key in _diagnosis_cache:
-        print(f"📦 Cache hit for {cache_key[:8]}")
-        return _diagnosis_cache[cache_key]
-
-    prompt = (
-        "Question: Identify the plant and the disease. "
-        "Answer in this format - Plant: [name], Disease: [name].\nAnswer:"
-    )
-    inputs = infer_processor(images=image, text=prompt, return_tensors="pt")
-    device = next(blip_model.parameters()).device
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-
-    with torch.no_grad():
-        out = blip_model.generate(
-            **inputs,
-            max_new_tokens=20,
-            num_beams=1,
-            do_sample=False,
-            repetition_penalty=1.2,
-        )
-
-    full_text   = infer_processor.decode(out[0], skip_special_tokens=True)
-    result_text = full_text.split("Answer:")[-1].strip()
-
-    plant_match   = re.search(r"Plant:\s*([^,.\n/\[\]]+)", result_text, re.I)
-    disease_match = re.search(r"Disease:\s*([^,.\n/\[\]]+)", result_text, re.I)
-    plant   = plant_match.group(1).strip()   if plant_match   else ""
-    disease = disease_match.group(1).strip() if disease_match else ""
-
-    if not plant or plant.startswith("["):    plant = ""
-    if not disease or disease.startswith("["): disease = ""
-
-    text_low = result_text.lower()
-    if not plant:   plant   = next((p.title() for p in KNOWN_PLANTS   if p in text_low), "")
-    if not disease:
-        if "healthy" in text_low: disease = "healthy"
-        else: disease = next((d.title() for d in KNOWN_DISEASES if d in text_low), "")
-
-    plant   = plant   if plant   else "Unknown"
-    disease = disease if disease else "Unknown/Healthy"
-
-    result = {"plant": plant, "disease": disease}
-
-    if cache_key:
-        _diagnosis_cache[cache_key] = result
-
-    return result
-
 
 # ══════════════════════════════════════════════════════════════
 # DISEASE SYNONYMS
@@ -266,7 +226,7 @@ class LeafImageInput(BaseModel):
 
 @tool(args_schema=LeafImageInput)
 def analyze_leaf_image(image_path: str) -> str:
-    """Analyze a plant leaf image using BLIP-2 fine-tuned model.
+    """Analyze a plant leaf image using ResNet50 fine-tuned model.
     Returns plant name and disease name.
     ALWAYS call this FIRST when given an image path."""
     try:
@@ -277,9 +237,6 @@ def analyze_leaf_image(image_path: str) -> str:
         plant   = result.get("plant",   "Unknown").strip()
         disease = result.get("disease", "Unknown").strip()
 
-        if plant.startswith("[") and plant.endswith("]"):     plant = "Unknown"
-        if disease.startswith("[") and disease.endswith("]"): disease = "Unknown"
-
         HEALTHY_KW = {"healthy","health","normal","no disease","unknown/healthy","none"}
         if any(kw in disease.lower() for kw in HEALTHY_KW) or disease.lower() in {"unknown","none",""}:
             return f"Plant: {plant} | Disease: healthy | STATUS: NO_DISEASE_DETECTED"
@@ -287,7 +244,7 @@ def analyze_leaf_image(image_path: str) -> str:
     except FileNotFoundError:
         return f"Error: Image not found at '{image_path}'"
     except Exception as e:
-        return f"BLIP-2 error: {e}"
+        return f"ResNet50 error: {e}"
 
 
 class ReferenceInput(BaseModel):
@@ -362,7 +319,6 @@ def search_all_sources(plant: str, disease: str) -> str:
 
 
 def _pdf_search_raw(plant: str, disease: str) -> str:
-    """Internal: PDF search without tool wrapper."""
     if not PDF_PAGES:
         return "Reference PDF not available."
     search_terms = _get_search_terms(plant, disease)
@@ -379,7 +335,6 @@ def _pdf_search_raw(plant: str, disease: str) -> str:
 
 
 def _web_search_raw(query: str) -> str:
-    """Internal: web search without tool wrapper."""
     if not tavily_client:
         return "Web search not available."
     try:
@@ -391,8 +346,7 @@ def _web_search_raw(query: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════
-# IRRIGATION TOOL — ✅ FIXED: accepts Union[float, str, None]
-# and coerces to float internally so LLM string values don't crash
+# IRRIGATION TOOL
 # ══════════════════════════════════════════════════════════════
 class IrrigationInput(BaseModel):
     plant:         str                        = Field(description="Plant name")
@@ -413,7 +367,6 @@ def get_irrigation_recommendation(
     if irrigation_model is None:
         return "Irrigation model not loaded. Please ensure model .pkl files are present."
 
-    # ✅ FIX: coerce any string/None values coming from the LLM to float
     def _to_float(v, default: float) -> float:
         try:
             return float(v) if v is not None else default
@@ -883,8 +836,6 @@ with gr.Blocks(css=CUSTOM_CSS, title="PlantDoc AI", theme=gr.themes.Base()) as d
                 height=200,
             )
             gr.HTML('<div class="section-title">🌡 الظروف البيئية (اختياري)</div>')
-            # ✅ FIX: default values set to sensible numbers instead of None
-            # to prevent Gradio from sending the string "None" to the agent
             temp_slider  = gr.Slider(0, 50,  step=0.5, label="درجة الحرارة (°C)", value=25.0)
             hum_slider   = gr.Slider(0, 100, step=1,   label="الرطوبة (%)",       value=60.0)
             moist_slider = gr.Slider(0, 100, step=1,   label="رطوبة التربة (%)",  value=50.0)
