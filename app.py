@@ -67,7 +67,12 @@ from transformers import AutoImageProcessor
 feature_extractor = AutoImageProcessor.from_pretrained("microsoft/resnet-50")
 print("✅ Feature Extractor loaded")
 print("⏳ Loading ResNet50 Model...")
-resnet_model = AutoModelForImageClassification.from_pretrained(RESNET_MODEL_ID)
+import tensorflow as tf
+
+# بدلاً من AutoModelForImageClassification.from_pretrained
+# استخدم دالة تحميل Keras المباشرة
+resnet_model = tf.keras.models.load_model('plant_disease_densenet_model.keras') 
+# ملاحظة: تأكد أنك حملت الملف في مجلد المشروع أو استخدم المسار الصحيح له
 resnet_model = resnet_model.to(DEVICE)
 resnet_model.eval()
 print("✅ ResNet50 Model loaded")
