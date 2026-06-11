@@ -61,7 +61,7 @@ print(f"🖥️  Device: {DEVICE}")
 # ══════════════════════════════════════════════════════════════
 BLIP2_MODEL_ID = os.environ.get(
     "BLIP2_MODEL_ID",
-    "mahmoudbadrzidan/blip2-plant-disease"
+    "Mahmoud-Badr-Zidan/blip2-plant-disease"
 )
 
 print("⏳ Loading BLIP-2 Processor...")
