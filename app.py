@@ -57,7 +57,7 @@ print(f"🖥️  Device: {DEVICE}")
 # ══════════════════════════════════════════════════════════════
 RESNET_MODEL_ID = os.environ.get(
     "RESNET_MODEL_ID",
-    "mohamedabdalmgyd/resnet50-plant-disease-densenet"
+    "Mahmoud-Badr-Zidan/plant_disease_densenet"
 )
 
 print("⏳ Loading ResNet50 Feature Extractor...")
